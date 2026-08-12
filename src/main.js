@@ -1,153 +1,226 @@
-const videoElement = document.getElementsByClassName('input_video')[0];
-const drawingCanvas = document.getElementsByClassName('drawing_layer')[0];
-const cursorCanvas = document.getElementsByClassName('cursor_layer')[0];
-const drawCtx = drawingCanvas.getContext('2d');
-const cursorCtx = cursorCanvas.getContext('2d');
-const statusText = document.getElementById('status-text');
+// ── Canvases ──────────────────────────────────────────────────────────────────
+const videoEl         = document.querySelector('.input_video');
+const drawingCanvas   = document.querySelector('.drawing_layer');
+const cursorCanvas    = document.querySelector('.cursor_layer');
+const drawCtx         = drawingCanvas.getContext('2d');
+const cursorCtx       = cursorCanvas.getContext('2d');
+const colorIndicator  = document.getElementById('color-indicator');
+const gestureHint     = document.getElementById('gesture-hint');
 
-let currentColor = '#ff2a2a';
-let isDrawing = false;
-let previousPoint = null;
+// ── Palette ───────────────────────────────────────────────────────────────────
+const PALETTE = [
+  '#FF2D55', // Red-pink
+  '#FF9500', // Orange
+  '#FFCC00', // Yellow
+  '#34C759', // Green
+  '#00C7BE', // Teal
+  '#007AFF', // Blue
+  '#AF52DE', // Purple
+  '#FFFFFF', // White
+];
+let colorIndex  = 0;
+let currentColor = PALETTE[colorIndex];
 
-// Handle color selection
-const colorBtns = document.querySelectorAll('.color-btn');
-colorBtns.forEach(btn => {
-  btn.addEventListener('click', () => {
-    colorBtns.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    currentColor = btn.getAttribute('data-color');
-  });
-});
+// ── Drawing state ─────────────────────────────────────────────────────────────
+let isDrawing    = false;
+let prevPoint    = null;
 
-// Clear canvas
-document.getElementById('clear-btn').addEventListener('click', () => {
-  drawCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-});
+// ── Gesture cooldown (prevent rapid re-triggers) ──────────────────────────────
+let colorCooldown = false;
+let clearCooldown = false;
 
-// Setup canvas size to match window
-function resizeCanvas() {
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  
-  // Save drawing context
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = drawingCanvas.width;
-  tempCanvas.height = drawingCanvas.height;
-  const tempCtx = tempCanvas.getContext('2d');
-  tempCtx.drawImage(drawingCanvas, 0, 0);
+// ── Canvas resize ─────────────────────────────────────────────────────────────
+function resizeCanvases() {
+  const w = window.innerWidth, h = window.innerHeight;
 
-  drawingCanvas.width = width;
-  drawingCanvas.height = height;
-  cursorCanvas.width = width;
-  cursorCanvas.height = height;
-  
-  // Restore drawing context
-  drawCtx.drawImage(tempCanvas, 0, 0);
+  // Preserve drawing layer
+  const tmp = document.createElement('canvas');
+  tmp.width  = drawingCanvas.width;
+  tmp.height = drawingCanvas.height;
+  tmp.getContext('2d').drawImage(drawingCanvas, 0, 0);
+
+  drawingCanvas.width = cursorCanvas.width  = w;
+  drawingCanvas.height = cursorCanvas.height = h;
+
+  drawCtx.drawImage(tmp, 0, 0);
+}
+window.addEventListener('resize', resizeCanvases);
+resizeCanvases();
+
+// ── HUD helpers ───────────────────────────────────────────────────────────────
+function updateColorHUD(hint) {
+  colorIndicator.style.backgroundColor = currentColor;
+  if (hint) {
+    gestureHint.textContent = hint;
+    clearTimeout(updateColorHUD._timer);
+    updateColorHUD._timer = setTimeout(() => {
+      gestureHint.style.opacity = '0';
+    }, 1800);
+    gestureHint.style.opacity = '1';
+  }
+  // Pulse animation
+  colorIndicator.classList.remove('pulse');
+  void colorIndicator.offsetWidth; // reflow
+  colorIndicator.classList.add('pulse');
+  setTimeout(() => colorIndicator.classList.remove('pulse'), 250);
+}
+updateColorHUD(null); // Init color dot
+
+function flashClear() {
+  const flash = document.createElement('div');
+  flash.className = 'clear-flash';
+  document.querySelector('.container').appendChild(flash);
+  requestAnimationFrame(() => { flash.style.opacity = '1'; });
+  setTimeout(() => {
+    flash.style.opacity = '0';
+    setTimeout(() => flash.remove(), 300);
+  }, 50);
 }
 
-window.addEventListener('resize', resizeCanvas);
-resizeCanvas(); // Initial size
-
-function calculateDistance(p1, p2) {
-  return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+// ── Distance helper ───────────────────────────────────────────────────────────
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
+// ── Map landmark to canvas coords ─────────────────────────────────────────────
+// Video is mirrored (scaleX(-1)) for front cam, but on environment (back) cam
+// we don't flip. MediaPipe gives 0-1 coords — multiply by canvas size.
+function toCanvas(lm) {
+  return {
+    x: lm.x * drawingCanvas.width,
+    y: lm.y * drawingCanvas.height,
+  };
+}
+
+// ── MediaPipe results handler ─────────────────────────────────────────────────
 function onResults(results) {
-  // Clear the cursor layer every frame
   cursorCtx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
 
-  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-    statusText.innerText = "Tracking Hand...";
-    const landmarks = results.multiHandLandmarks[0];
-    
-    // Index finger tip is landmark 8, Thumb tip is landmark 4
-    const indexTip = landmarks[8];
-    const thumbTip = landmarks[4];
+  if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+    gestureHint.style.opacity = '1';
+    gestureHint.textContent = 'Show your hand';
+    isDrawing = false;
+    prevPoint = null;
+    return;
+  }
 
-    // Note: MediaPipe returns normalized coordinates (0 to 1). 
-    // Need to map to canvas. Since video might be object-fit: cover, mapping isn't perfectly 1:1,
-    // but multiplying by canvas dimensions works well enough for an overlay.
-    // Also, if camera is environment, we don't necessarily flip X, but let's test normally.
-    const x = indexTip.x * drawingCanvas.width;
-    const y = indexTip.y * drawingCanvas.height;
-    
-    // Draw cursor indicator at index finger tip
+  const lm = results.multiHandLandmarks[0];
+
+  // Key landmarks
+  const thumbTip  = lm[4];
+  const indexTip  = lm[8];
+  const midTip    = lm[12];
+  const ringTip   = lm[16];
+
+  const indexCanvas = toCanvas(indexTip);
+  const thumbCanvas = toCanvas(thumbTip);
+
+  // ── Gesture 1: Index+Thumb → Draw ────────────────────────────────────────
+  const indexPinch = dist(indexTip, thumbTip);
+  const DRAW_THRESHOLD = 0.06;
+
+  // ── Gesture 2: Middle+Thumb → Cycle Color ────────────────────────────────
+  const midPinch = dist(midTip, thumbTip);
+  const COLOR_THRESHOLD = 0.055;
+
+  // ── Gesture 3: Ring+Thumb → Clear Canvas ─────────────────────────────────
+  const ringPinch = dist(ringTip, thumbTip);
+  const CLEAR_THRESHOLD = 0.055;
+
+  // -- Middle pinch: change color
+  if (midPinch < COLOR_THRESHOLD && !colorCooldown) {
+    colorIndex = (colorIndex + 1) % PALETTE.length;
+    currentColor = PALETTE[colorIndex];
+    colorCooldown = true;
+    updateColorHUD('✦ Color changed');
+    setTimeout(() => { colorCooldown = false; }, 700);
+  }
+
+  // -- Ring pinch: clear canvas
+  if (ringPinch < CLEAR_THRESHOLD && !clearCooldown) {
+    drawCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
+    clearCooldown = true;
+    gestureHint.textContent = '✦ Canvas cleared';
+    gestureHint.style.opacity = '1';
+    flashClear();
+    setTimeout(() => {
+      clearCooldown = false;
+      gestureHint.style.opacity = '0';
+    }, 1200);
+  }
+
+  // -- Index pinch: draw
+  if (indexPinch < DRAW_THRESHOLD) {
+    if (!isDrawing) {
+      isDrawing = true;
+      prevPoint = indexCanvas;
+    } else {
+      drawCtx.beginPath();
+      drawCtx.moveTo(prevPoint.x, prevPoint.y);
+      drawCtx.lineTo(indexCanvas.x, indexCanvas.y);
+      drawCtx.strokeStyle = currentColor;
+      drawCtx.lineWidth   = 8;
+      drawCtx.lineCap     = 'round';
+      drawCtx.lineJoin    = 'round';
+      drawCtx.stroke();
+      prevPoint = indexCanvas;
+    }
+
+    gestureHint.style.opacity = '0';
+
+    // Draw filled cursor when pinching
     cursorCtx.beginPath();
-    cursorCtx.arc(x, y, 10, 0, 2 * Math.PI);
+    cursorCtx.arc(indexCanvas.x, indexCanvas.y, 12, 0, Math.PI * 2);
     cursorCtx.fillStyle = currentColor;
     cursorCtx.fill();
-    cursorCtx.lineWidth = 3;
-    cursorCtx.strokeStyle = 'white';
-    cursorCtx.stroke();
-    
-    // Check for pinch gesture to start drawing
-    const pinchDistance = calculateDistance(indexTip, thumbTip);
-    
-    // Threshold to detect pinch (can be tweaked based on testing)
-    const PINCH_THRESHOLD = 0.05;
-    
-    if (pinchDistance < PINCH_THRESHOLD) {
-      if (!isDrawing) {
-        isDrawing = true;
-        previousPoint = { x, y };
-      } else {
-        // Draw line on the drawing canvas
-        drawCtx.beginPath();
-        drawCtx.moveTo(previousPoint.x, previousPoint.y);
-        drawCtx.lineTo(x, y);
-        drawCtx.strokeStyle = currentColor;
-        drawCtx.lineWidth = 8;
-        drawCtx.lineCap = 'round';
-        drawCtx.lineJoin = 'round';
-        drawCtx.stroke();
-        previousPoint = { x, y };
-      }
-      
-      // Visually indicate drawing mode (larger cursor)
-      cursorCtx.beginPath();
-      cursorCtx.arc(x, y, 15, 0, 2 * Math.PI);
-      cursorCtx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-      cursorCtx.fill();
-    } else {
-      isDrawing = false;
-      previousPoint = null;
-    }
   } else {
-    statusText.innerText = "No hand detected in view";
     isDrawing = false;
-    previousPoint = null;
+    prevPoint = null;
+
+    // Hollow cursor when hovering
+    cursorCtx.beginPath();
+    cursorCtx.arc(indexCanvas.x, indexCanvas.y, 9, 0, Math.PI * 2);
+    cursorCtx.strokeStyle = currentColor;
+    cursorCtx.lineWidth   = 3;
+    cursorCtx.stroke();
+
+    // Show hand detected hint once
+    if (gestureHint.textContent === 'Show your hand') {
+      gestureHint.textContent = 'Pinch to draw · Middle+thumb = color · Ring+thumb = clear';
+      setTimeout(() => { gestureHint.style.opacity = '0'; }, 3000);
+    }
   }
 }
 
-// Initialize MediaPipe Hands
-const hands = new Hands({locateFile: (file) => {
-  return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-}});
+// ── MediaPipe Hands ───────────────────────────────────────────────────────────
+const hands = new Hands({
+  locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+});
 
 hands.setOptions({
   maxNumHands: 1,
-  modelComplexity: 1, // 0 for lighter weight, 1 for accuracy
-  minDetectionConfidence: 0.6,
-  minTrackingConfidence: 0.6
+  modelComplexity: 1,
+  minDetectionConfidence: 0.65,
+  minTrackingConfidence: 0.65
 });
 
 hands.onResults(onResults);
 
-// Initialize Camera
-const camera = new Camera(videoElement, {
-  onFrame: async () => {
-    await hands.send({image: videoElement});
-  },
-  facingMode: 'environment', // Request back camera
-  width: { ideal: 1280 },
-  height: { ideal: 720 }
+// ── Camera ────────────────────────────────────────────────────────────────────
+const camera = new Camera(videoEl, {
+  onFrame: async () => { await hands.send({ image: videoEl }); },
+  facingMode: 'environment',
+  width:  { ideal: 1280 },
+  height: { ideal: 720  }
 });
 
 camera.start()
   .then(() => {
-    statusText.innerText = "Camera active. Show your hand!";
+    gestureHint.textContent = 'Show your hand';
+    gestureHint.style.opacity = '1';
   })
   .catch(err => {
-    statusText.innerText = "Camera error. HTTPS required on mobile.";
-    console.error('Camera Error:', err);
+    gestureHint.textContent = 'Camera error — HTTPS required on mobile';
+    gestureHint.style.opacity = '1';
+    console.error(err);
   });
