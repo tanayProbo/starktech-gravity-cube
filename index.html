@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Air Doodler</title>
+  <link rel="stylesheet" href="./src/style.css">
+  <!-- MediaPipe dependencies -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+  <div class="container">
+    <video class="input_video" autoplay playsinline></video>
+    
+    <!-- We use two canvases: one for the permanent drawing, one for the temporary cursor/indicator -->
+    <canvas class="output_canvas drawing_layer"></canvas>
+    <canvas class="output_canvas cursor_layer"></canvas>
+    
+    <div class="ui-panel">
+      <h1>Air Doodler</h1>
+      <p class="instruction">Pinch thumb & index finger to draw</p>
+      <div class="colors">
+        <div class="color-btn active" data-color="#ff2a2a" style="background-color: #ff2a2a;"></div>
+        <div class="color-btn" data-color="#2aef2a" style="background-color: #2aef2a;"></div>
+        <div class="color-btn" data-color="#2a2aff" style="background-color: #2a2aff;"></div>
+        <div class="color-btn" data-color="#ff2aff" style="background-color: #ff2aff;"></div>
+        <div class="color-btn" data-color="#ffff2a" style="background-color: #ffff2a;"></div>
+      </div>
+      <button id="clear-btn">Clear Canvas</button>
+      <div class="status" id="status-text">Initializing camera...</div>
+    </div>
+  </div>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
