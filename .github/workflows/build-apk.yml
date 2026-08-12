@@ -27,12 +27,14 @@ jobs:
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '21'
 
       - name: Build APK
         working-directory: ./android
         run: |
+          java -version
+          javac -version
           chmod +x ./gradlew
           ./gradlew assembleDebug
 
