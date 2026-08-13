@@ -207,20 +207,58 @@ hands.setOptions({
 hands.onResults(onResults);
 
 // ── Camera ────────────────────────────────────────────────────────────────────
-const camera = new Camera(videoEl, {
-  onFrame: async () => { await hands.send({ image: videoEl }); },
-  facingMode: 'environment',
-  width:  { ideal: 1280 },
-  height: { ideal: 720  }
-});
+// In a Capacitor native WebView, getUserMedia works without HTTPS.
+// We try the MediaPipe Camera helper first; if that fails (e.g. browser/web)
+// we fall back to a raw getUserMedia loop.
 
-camera.start()
-  .then(() => {
+async function startCamera() {
+  // First try: MediaPipe Camera util (preferred)
+  try {
+    const cam = new Camera(videoEl, {
+      onFrame: async () => { await hands.send({ image: videoEl }); },
+      facingMode: 'environment',
+      width:  { ideal: 1280 },
+      height: { ideal: 720  }
+    });
+    await cam.start();
     gestureHint.textContent = 'Show your hand';
     gestureHint.style.opacity = '1';
-  })
-  .catch(err => {
-    gestureHint.textContent = 'Camera error — HTTPS required on mobile';
+    return;
+  } catch (e) {
+    console.warn('MediaPipe Camera util failed, trying raw getUserMedia…', e);
+  }
+
+  // Second try: raw getUserMedia + manual frame loop
+  try {
+    const constraints = {
+      video: {
+        facingMode: { ideal: 'environment' },
+        width:  { ideal: 1280 },
+        height: { ideal: 720  }
+      },
+      audio: false
+    };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    videoEl.srcObject = stream;
+    videoEl.play();
+
+    videoEl.addEventListener('loadeddata', () => {
+      gestureHint.textContent = 'Show your hand';
+      gestureHint.style.opacity = '1';
+
+      async function loop() {
+        if (videoEl.readyState >= 2) {
+          await hands.send({ image: videoEl });
+        }
+        requestAnimationFrame(loop);
+      }
+      loop();
+    });
+  } catch (err) {
+    gestureHint.textContent = `Camera error: ${err.message}`;
     gestureHint.style.opacity = '1';
-    console.error(err);
-  });
+    console.error('Camera failed entirely:', err);
+  }
+}
+
+startCamera();
