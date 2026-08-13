@@ -206,12 +206,27 @@ hands.setOptions({
 
 hands.onResults(onResults);
 
+import { Camera as CapCamera } from '@capacitor/camera';
+
 // ── Camera ────────────────────────────────────────────────────────────────────
 // In a Capacitor native WebView, getUserMedia works without HTTPS.
 // We try the MediaPipe Camera helper first; if that fails (e.g. browser/web)
 // we fall back to a raw getUserMedia loop.
 
 async function startCamera() {
+  // Check and request native permissions via Capacitor
+  try {
+    const status = await CapCamera.requestPermissions();
+    if (status.camera !== 'granted' && status.camera !== 'prompt') {
+      gestureHint.textContent = 'Camera permission denied';
+      gestureHint.style.opacity = '1';
+      return;
+    }
+  } catch (e) {
+    // If not running in Capacitor (e.g. standard browser), this will throw, which is fine to ignore.
+    console.log('Running outside Capacitor or Camera plugin unavailable:', e);
+  }
+
   // First try: MediaPipe Camera util (preferred)
   try {
     const cam = new Camera(videoEl, {
